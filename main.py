@@ -1,13 +1,12 @@
 import docker
-import re
+import fnmatch
 import os
-from netaddr import valid_ipv4
 
-LABEL = 'ru.grachevko.dhu'
+HOSTNAME_LABEL = 'dhu.hostname'
 MARKER = '#### DOCKER HOSTS UPDATER ####'
 HOSTS_PATH = '/opt/hosts'
-CONTAINER_HOSTNAME_DISABLED = bool(os.getenv('CONTAINER_HOSTNAME_DISABLED', False))
-CONTAINER_NAME_DISABLED = bool(os.getenv('CONTAINER_NAME_DISABLED', False))
+NETWORK_FILTER = os.environ.get('NETWORK_FILTER', '')
+CONTAINER_FILTER = os.environ.get('CONTAINER_FILTER', '')
 
 
 def listen():
@@ -16,90 +15,45 @@ def listen():
             handle()
 
 
+def matches_filter(name, pattern):
+    if not pattern:
+        return True
+    return fnmatch.fnmatch(name, pattern)
+
+
 def scan():
     containers = []
     for container in docker.containers.list():
-        label = container.attrs.get('Config').get('Labels').get(LABEL)
-        if not label:
+        networks = container.attrs.get('NetworkSettings', {}).get('Networks', {})
+
+        network_match = any(
+            matches_filter(net_name, NETWORK_FILTER) for net_name in networks
+        )
+        container_match = matches_filter(container.name, CONTAINER_FILTER)
+
+        if not (network_match and container_match):
             continue
 
-        for string in label.split(';'):
-            priority = 0
-            lb = container
-            ip = False
+        labels = container.attrs.get('Config', {}).get('Labels', {})
+        hostname = labels.get(HOSTNAME_LABEL, container.name)
 
-            if ':' in string:
-                parts = string.split(':')
-                string = parts[0]
-                priority = int(parts[1]) if len(parts) >= 2 else priority
+        # Find IP from matching network, or first available
+        ip = None
+        for net_name, net_info in networks.items():
+            if NETWORK_FILTER and fnmatch.fnmatch(net_name, NETWORK_FILTER):
+                ip = net_info.get('IPAddress')
+                break
+        if not ip:
+            ip = next(iter(networks.values()), {}).get('IPAddress')
 
-                if len(parts) == 3:
-                    lbString = parts[2]
-
-                    if valid_ipv4(lbString):
-                        ip = lbString
-                    else:
-                        lb = docker.containers.get(lbString)
-
-            if ip == False:
-                ip = next(iter(lb.attrs.get('NetworkSettings').get('Networks').values())).get('IPAddress')
-
-            hosts = string_to_array(string)
-            if not CONTAINER_HOSTNAME_DISABLED:
-                hosts.append(container.attrs.get('Config').get('Hostname'))
-            if not CONTAINER_NAME_DISABLED:
-                hosts.append(container.name)
-
-            if ip:
-                containers.append({
-                    'ip': ip,
-                    'priority': priority,
-                    'hosts': hosts,
-                    'createdAt': container.attrs.get('Created'),
-                })
+        if ip:
+            containers.append({
+                'ip': ip,
+                'hosts': [hostname],
+                'createdAt': container.attrs.get('Created'),
+            })
 
     return containers
-
-
-def string_to_array(input_string):
-    dd = [(rec.group().replace("{", "").replace("}", "").split(","), rec.span()) for rec in
-          re.finditer("{[^}]*}", input_string)]
-
-    texts = []
-    if len(dd) != 0:
-        for i in range(len(dd)):
-            if i == 0:
-                if dd[0][1][0] == 0:
-                    texts.append("")
-                else:
-                    texts.append(input_string[0:dd[0][1][0]])
-            else:
-                texts.append(input_string[dd[i - 1][1][1]:dd[i][1][0]])
-            if i == len(dd) - 1:
-                texts.append(input_string[dd[-1][1][1]:])
-    else:
-        texts = [input_string]
-
-    if len(dd) > 0:
-        idxs = [0] * len(dd)
-        summary = []
-
-        while idxs[0] != len(dd[0][0]):
-            summary_string = ""
-            for i in range(len(idxs)):
-                summary_string += texts[i] + dd[i][0][idxs[i]]
-            summary_string += texts[-1]
-            summary.append(summary_string)
-            for j in range(len(idxs) - 1, -1, -1):
-                if j == len(idxs) - 1:
-                    idxs[j] += 1
-                if j > 0 and idxs[j] == len(dd[j][0]):
-                    idxs[j] = 0
-                    idxs[j - 1] += 1
-    else:
-        summary = texts
-
-    return summary
 
 
 def update(items):
@@ -134,29 +88,13 @@ def handle():
     print('Recompiling...')
     items = scan()
 
-    map_dict = {}
-    for item in items:
-        for host in item.get('hosts'):
-            if host in map_dict:
-                priority_left = map_dict[host].get('priority')
-                priority_right = item.get('priority')
-
-                if priority_left > priority_right:
-                    continue
-
-                if priority_left == priority_right and map_dict[host].get('createdAt') < item.get('createdAt'):
-                    continue
-
-            map_dict[host] = item
-
     summary = {}
     for item in items:
         ip = item.get('ip')
         for host in item.get('hosts'):
-            if map_dict[host].get('ip') == ip:
-                if ip not in summary:
-                    summary[ip] = []
-                summary[ip].append(host)
+            if ip not in summary:
+                summary[ip] = []
+            summary[ip].append(host)
 
     update(summary)
 
