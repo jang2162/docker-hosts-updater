@@ -1,13 +1,12 @@
 docker-hosts-updater
 ----------
-Automatic update `/etc/hosts` on start/stop containers by labels.
+Automatic update `/etc/hosts` on start/stop containers by filter.
 
 Requirements
 -----
-* **Native linux**  
-_This tool has no effect on macOS or windows, because docker on these OS run in 
-VM and you can't directly access from host to each container via ip.
-Yet you can pass traffic through loadbalancer, see section above._  
+* **Native linux**
+_This tool has no effect on macOS or windows, because docker on these OS run in
+VM and you can't directly access from host to each container via ip._
 
 Usage
 -----
@@ -18,74 +17,34 @@ $ docker run -d --restart=always \
     --name docker-hosts-updater \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /etc/hosts:/opt/hosts \
-    grachevko/docker-hosts-updater
+    registry.develma.com/packages/util/docker-host-updater
 ```
-    
-Start containers with label `ru.grachevko.dhu` option
 
-    % docker run -d --label ru.grachevko.dhu=nginx.local nginx
-      
-Try to ping from host
-
-    % ping nginx.local
-
-Default hosts
+Environment Variables
 -----
-By default adding records with container name and container hostname. 
-To disable it you can use environments `CONTAINER_HOSTNAME_DISABLED` and `CONTAINER_NAME_DISABLED`:    
+
+| Variable | Description | Default |
+|---|---|---|
+| `NETWORK_FILTER` | Glob pattern to match Docker network names | _(empty, matches all)_ |
+| `CONTAINER_FILTER` | Glob pattern to match container names | _(empty, matches all)_ |
+
+Containers matching **both** filters are targeted. The container name is used as the hostname in `/etc/hosts`.
+
 ```bash
 $ docker run -d --restart=always \
     --name docker-hosts-updater \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /etc/hosts:/opt/hosts \
-    -e CONTAINER_HOSTNAME_DISABLED=false \
-    -e CONTAINER_NAME_DISABLED=false \
-    grachevko/docker-hosts-updater
+    -e NETWORK_FILTER="my_project_*" \
+    -e CONTAINER_FILTER="web-*" \
+    registry.develma.com/packages/util/docker-host-updater
 ```
 
-Multiple Hosts
+Custom Hostname
 -----
-You can add multiple hosts, just separate them by semicolon:
+To override the default hostname (container name), add the `dhu.hostname` label to the container:
 
 ```bash
-$ docker run --label ru.grachevko.dhu="nginx.local;nginx.ru" nginx
-$ ping nginx.local
-$ ping nginx.ru
-```
-
-Subdomains
------
-Add subdomains by using pattern `{www,api}.nginx.local`:
-
-```bash
-$ docker run -d --label ru.grachevko.dhu="{www,api}.nginx.local" nginx
-$ ping nginx.local
-$ ping www.nginx.local
-$ ping api.nginx.local
-```
-
-Priority
-----
-If you want to run two containers with same hosts and want one override another, 
-just add priority after colon:
-
-```bash
-$ docker run -d --label ru.grachevko.dhu="nginx.local" nginx
-$ docker run -d --label ru.grachevko.dhu="nginx.local:10" nginx
+$ docker run -d --label dhu.hostname=nginx.local nginx
 $ ping nginx.local
 ```
-Container with greater priority will be used. Default priority 0. 
-If priority is the same then early created container will be used.
-
-Load Balancer
-----
-In order to pass the traffic through the loadbalancer you should define container's name or valid IPv4. 
-Just add one more colon and container name after it.
-```bash
-$ docker run -d --name lb nginx
-$ docker run -d --label ru.grachevko.dhu="nginx1.local:0:lb" nginx
-$ docker run -d --label ru.grachevko.dhu="nginx2.local:0:127.0.0.1" nginx
-$ ping nginx1.local // ip of lb
-$ ping nginx2.local // ip of lb
-```
-Keep in mind, loadbalancer container must have fixed name.
