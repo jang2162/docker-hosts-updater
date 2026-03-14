@@ -1,0 +1,8 @@
+services:
+  docker-hosts-updater:
+    image: registry.develma.com/packages/util/docker-host-updater:latest
+    container_name: docker-hosts-updater
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/hosts:/opt/hosts
